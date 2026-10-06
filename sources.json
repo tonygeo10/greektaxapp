@@ -1,0 +1,58 @@
+{
+  "_note": "URLs checked on 2026-10-03 by fetching each page/feed. Sites change, so run `python3 digest.py check-sources` on your machine before the first fetch. One broken source never stops the others.",
+  "_options": {
+    "type": "rss | html_links",
+    "link_pattern": "html_links only: regex the article URL must match",
+    "url_date_pattern": "html_links only: regex with 3 groups (day, month, year) to read the publish date from the article URL",
+    "max_items": "html_links only: newest N links per run (default 15), limits the first-run flood",
+    "max_age_days": "skip items older than this (default 14)",
+    "keep_all": "true = keep items even if no topic keyword matches",
+    "store_excerpt": "false = keep only title and link, never the source's text",
+    "pubdate_is_deadline": "true = the feed's date is the deadline/event date (Taxheaven calendar)",
+    "max_ahead_days": "with pubdate_is_deadline: only events within this many days ahead (default 45)"
+  },
+  "sources": [
+    {
+      "name": "ΑΑΔΕ – Δελτία Τύπου",
+      "type": "html_links",
+      "url": "https://www.aade.gr/deltia-typoy-anakoinoseis",
+      "link_pattern": "/deltia-typoy-anakoinoseis/deltio-typoy-",
+      "url_date_pattern": "deltio-typoy-(\\d{2})(\\d{2})(\\d{4})",
+      "max_items": 15,
+      "enabled": true
+    },
+    {
+      "name": "e-ΕΦΚΑ – Ανακοινώσεις",
+      "type": "html_links",
+      "url": "https://www.e-efka.gov.gr/el/anakoinoseis",
+      "link_pattern": "/el/anakoinoseis/anakoinosi-",
+      "max_items": 12,
+      "enabled": true
+    },
+    {
+      "name": "Taxheaven – Φορολογικό ημερολόγιο",
+      "type": "rss",
+      "url": "https://www.taxheaven.gr/bibliothiki/soft/xml/soft_dat.xml",
+      "pubdate_is_deadline": true,
+      "max_ahead_days": 30,
+      "keep_all": true,
+      "store_excerpt": false,
+      "enabled": true
+    },
+    {
+      "name": "Taxheaven – Νέα",
+      "type": "rss",
+      "url": "https://www.taxheaven.gr/bibliothiki/soft/xml/soft_new.xml",
+      "store_excerpt": false,
+      "enabled": true
+    },
+    {
+      "name": "Taxheaven – Αποφάσεις & Εγκύκλιοι",
+      "type": "rss",
+      "url": "https://www.taxheaven.gr/bibliothiki/soft/xml/soft_law.xml",
+      "keep_all": true,
+      "store_excerpt": false,
+      "enabled": true
+    }
+  ]
+}
