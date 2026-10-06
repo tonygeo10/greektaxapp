@@ -50,10 +50,13 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(digest.build(self.conn, today=TODAY), ([], []))
         self.conn.execute("UPDATE items SET status='approved'")
         d, n = digest.build(self.conn, today=TODAY)
-        self.assertEqual((len(d), len(n)), (1, 1))
+        # VAT states a deadline -> in deadlines AND in articles; payroll has none -> articles only
+        self.assertEqual((len(d), len(n)), (1, 2))
         text = digest.render_text(d, n, TODAY)
         self.assertIn("31/10/2026", text)
         self.assertIn("σε 28 ημέρες", text)
+        self.assertEqual(text.count("Παράταση προθεσμίας υποβολής δηλώσεων ΦΠΑ"), 1)  # not listed twice
+        self.assertIn("ΑΡΘΡΑ", text)
 
     def test_deadline_rules(self):
         f = digest.find_deadline
@@ -110,6 +113,31 @@ class SourceTypeTests(unittest.TestCase):
         self.assertIn("05/10/2026", rows[0]["deadline_evidence"])
         self.assertEqual(digest.ingest(self.conn, [src], today=TODAY)[0]["new"], 0)
 
+    def test_calendar_events_are_deadlines_only_never_articles(self):
+        name = "Taxheaven – Φορολογικό ημερολόγιο"  # configured with pubdate_is_deadline in sources.json
+        self.assertIn(name, digest.event_sources())
+        src = {"name": name, "type": "rss", "url": self.file_url("c.xml", CAL_FEED),
+               "pubdate_is_deadline": True, "max_ahead_days": 30, "keep_all": True, "store_excerpt": False}
+        digest.ingest(self.conn, [src], today=TODAY)
+        self.conn.execute("UPDATE items SET status='approved'")
+        d, n = digest.build(self.conn, today=TODAY, days=30)
+        self.assertEqual(len(d), 2)
+        self.assertEqual(n, [])  # events never appear in the articles list
+        self.assertTrue(all(r["kind"] == "event" for r in d))
+        import json
+        out = json.loads(digest.render_json(d, n))
+        self.assertEqual({r["kind"] for r in out["deadlines"]}, {"event"})
+
+    def test_articles_respect_the_day_window(self):
+        from datetime import timedelta
+        art = {"name": "Άρθρα", "type": "rss", "url": self.file_url("a.xml", FEED)}
+        digest.ingest(self.conn, [art], today=TODAY)
+        self.conn.execute("UPDATE items SET status='approved'")
+        d, n = digest.build(self.conn, today=TODAY + timedelta(days=10), days=2)
+        self.assertEqual(len(n), 0)   # published Oct 1, window is Oct 11-13: too old for articles
+        self.assertEqual(len(d), 1)   # but its deadline (Oct 31) is still upcoming
+        self.assertEqual(d[0]["kind"], "article")
+
     def test_html_listing_with_url_dates(self):
         src = {"name": "ΑΑΔΕ", "type": "html_links", "url": self.file_url("l.html", LISTING),
                "link_pattern": "/deltia-typoy-anakoinoseis/deltio-typoy-",
@@ -118,6 +146,29 @@ class SourceTypeTests(unittest.TestCase):
         self.assertEqual(r["found"], 2)  # /about and the too-short anchor text are ignored
         self.assertEqual(r["new"], 1)    # the August release is older than max_age_days
         self.assertEqual(self.conn.execute("SELECT published FROM items").fetchone()[0], "2026-10-02")
+
+    def test_source_status_is_recorded_and_exposed(self):
+        import json
+        good = {"name": "Καλή", "type": "rss", "url": self.file_url("g.xml", FEED)}
+        bad = {"name": "Χαλασμένη", "type": "rss", "url": (Path(self.tmp.name) / "missing.xml").as_uri()}
+        cfg = Path(self.tmp.name) / "src.json"
+        cfg.write_text(json.dumps({"sources": [good, bad]}), encoding="utf-8")
+        old = digest.SOURCES_PATH
+        digest.SOURCES_PATH = str(cfg)
+        try:
+            digest.ingest(self.conn, [good, bad], today=TODAY)
+            st = {s["source"]: s for s in digest.source_status(self.conn)}
+            self.assertIsNone(st["Καλή"]["error"])
+            self.assertEqual((st["Καλή"]["found"], st["Καλή"]["matched"], st["Καλή"]["new"]), (5, 3, 2))  # 3 topic matches incl. the duplicate title, 2 stored
+            self.assertIn("URLError", st["Χαλασμένη"]["error"])  # the failure is visible, not only in a log
+            data = json.loads(digest.render_json([], [], sources=list(st.values())))
+            self.assertEqual([s["source"] for s in data["sources"]], ["Καλή", "Χαλασμένη"])
+            # a source that has never been fetched is still listed
+            cfg.write_text(json.dumps({"sources": [good, bad, {"name": "Νέα", "type": "rss", "url": "x"}]}))
+            names = {s["source"]: s for s in digest.source_status(self.conn)}
+            self.assertIsNone(names["Νέα"]["at"])
+        finally:
+            digest.SOURCES_PATH = old
 
     def test_shipped_sources_json_is_wellformed(self):
         import re
@@ -135,6 +186,27 @@ class SourceTypeTests(unittest.TestCase):
         self.assertEqual(re.search(aade["url_date_pattern"], link).groups(), ("02", "10", "2026"))
         efka = next(s for s in sources if s["name"].startswith("e-ΕΦΚΑ"))
         self.assertTrue(re.search(efka["link_pattern"], "https://www.e-efka.gov.gr/el/anakoinoseis/anakoinosi-387"))
+
+
+class PublicConfigTests(unittest.TestCase):
+    def test_public_host_needs_strong_admin_key(self):
+        c = digest.check_public_config
+        self.assertIsNone(c("127.0.0.1", None))          # local use: key may be generated
+        self.assertIsNone(c("localhost", ""))
+        self.assertIn("DIGEST_ADMIN_KEY", c("0.0.0.0", None))
+        self.assertIn("DIGEST_ADMIN_KEY", c("0.0.0.0", "short"))
+        self.assertIsNone(c("0.0.0.0", "x" * 16))
+
+    def test_serve_refuses_to_start_unsafe(self):
+        import os
+        old = os.environ.pop("DIGEST_ADMIN_KEY", None)
+        try:
+            with self.assertRaises(SystemExit) as cm:
+                digest.main(["serve", "--host", "0.0.0.0", "--port", "0"])
+            self.assertIn("admin key", str(cm.exception.code))
+        finally:
+            if old is not None:
+                os.environ["DIGEST_ADMIN_KEY"] = old
 
 
 class ReviewApiTests(unittest.TestCase):
@@ -197,7 +269,7 @@ class ReviewApiTests(unittest.TestCase):
         conn = digest.db()
         d, n = digest.build(conn, today=TODAY)
         conn.close()
-        self.assertEqual((len(d), len(n)), (1, 0))  # rejected item never reaches the digest
+        self.assertEqual((len(d), len(n)), (1, 1))  # the rejected payroll item never reaches the digest
         self.call("/api/review", {"ids": [other["id"]], "action": "undo"})
         self.assertEqual(len(self.call("/api/pending")[1]["items"]), 1)
 

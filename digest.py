@@ -18,6 +18,7 @@ import re
 import secrets
 import sqlite3
 import sys
+import threading
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -39,11 +40,7 @@ WEB_MIME = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-
 # ---------------------------------------------------------------- text utils
 
 
-def norm(s):
-    """Lowercase, strip Greek accents, fold final sigma. Length-preserving for NFC input."""
-    s = unicodedata.normalize("NFD", unicodedata.normalize("NFC", s))
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    return s.lower().replace("ς", "σ")
+from textutil import norm, MONTH_WORDS, DATE_TXT, DATE_NUM
 
 
 def strip_html(s):
@@ -74,11 +71,6 @@ def classify(text):
 
 # --------------------------------------------------------- deadline extraction
 
-_STEMS = [("ιανουαρι", 1), ("φεβρουαρι", 2), ("μαρτι", 3), ("απριλι", 4), ("μαι", 5), ("ιουνι", 6),
-          ("ιουλι", 7), ("αυγουστ", 8), ("σεπτεμβρι", 9), ("οκτωβρι", 10), ("νοεμβρι", 11), ("δεκεμβρι", 12)]
-MONTH_WORDS = {stem + end: n for stem, n in _STEMS for end in ("ου", "οσ")}
-DATE_TXT = re.compile(r"(?<!\d)(\d{1,2})\s+(" + "|".join(MONTH_WORDS) + r")(?:\s+(\d{4}))?")
-DATE_NUM = re.compile(r"(?<!\d)(\d{1,2})[/.](\d{1,2})[/.](\d{4})(?!\d)")
 CUE = re.compile(r"(εωσ|μεχρι|προθεσμι|παραταση|παρατεινεται|εντοσ|ληγει|ληξη|υποβολη)")
 
 
@@ -112,7 +104,9 @@ def find_deadline(text, published=None):
 
 
 def http_get(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "el,en;q=0.8"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read()
         charset = r.headers.get_content_charset() if r.headers else None
@@ -187,6 +181,52 @@ def parse_links(body, base, pattern):
     return p.items
 
 
+class _ArticleText(HTMLParser):
+    """Readable text of an article page: prefers <article>/<main>, drops menus, scripts and footers."""
+    SKIP = {"script", "style", "noscript", "svg", "head", "nav", "header", "footer", "aside", "form", "template"}
+    BLOCK = {"p", "div", "li", "br", "tr", "h1", "h2", "h3", "h4", "section", "ul", "ol", "table"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.skip, self.main, self.everything, self.focus = 0, 0, [], []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self.skip += 1
+        elif tag in ("article", "main"):
+            self.main += 1
+        elif tag in self.BLOCK:
+            self.everything.append("\n")
+            if self.main:
+                self.focus.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP:
+            self.skip = max(0, self.skip - 1)
+        elif tag in ("article", "main"):
+            self.main = max(0, self.main - 1)
+        elif tag in self.BLOCK:
+            self.everything.append("\n")
+            if self.main:
+                self.focus.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.everything.append(data)
+            if self.main:
+                self.focus.append(data)
+
+
+def html_to_text(page):
+    p = _ArticleText()
+    p.feed(page)
+    text = "".join(p.focus)
+    if len(text.strip()) < 200:
+        text = "".join(p.everything)
+    lines = (" ".join(line.split()) for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
 def collect(src):
     body = http_get(src["url"])
     if src["type"] == "rss":
@@ -211,14 +251,47 @@ def collect(src):
 SCHEMA = """CREATE TABLE IF NOT EXISTS items(
   id TEXT PRIMARY KEY, source TEXT, title TEXT, url TEXT UNIQUE, published TEXT, fetched_at TEXT,
   excerpt TEXT, tags TEXT, deadline TEXT, deadline_evidence TEXT, year_inferred INTEGER DEFAULT 0,
-  status TEXT DEFAULT 'pending', sent_at TEXT)"""
+  status TEXT DEFAULT 'pending', sent_at TEXT, body TEXT, summary TEXT, deadline_by TEXT)"""
+
+RUNS_SCHEMA = """CREATE TABLE IF NOT EXISTS runs(
+  source TEXT PRIMARY KEY, at TEXT, found INTEGER, matched INTEGER, new INTEGER, error TEXT, note TEXT)"""
+
+_NEW_COLUMNS = {"items": (("body", "TEXT"), ("summary", "TEXT"), ("deadline_by", "TEXT")),
+                "runs": (("note", "TEXT"),)}
 
 
 def db(path=None):
-    conn = sqlite3.connect(path or DB_PATH)
+    conn = sqlite3.connect(path or DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute(SCHEMA)
+    conn.execute(RUNS_SCHEMA)
+    for table, cols in _NEW_COLUMNS.items():  # upgrade databases created by older versions
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in cols:
+            if name not in have:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                except sqlite3.OperationalError:  # another connection added it first
+                    pass
+    conn.commit()
     return conn
+
+
+def record_run(conn, r):
+    """Remember the last fetch result per source so the web page can show why a source is empty."""
+    conn.execute("INSERT OR REPLACE INTO runs(source,at,found,matched,new,error,note) VALUES(?,?,?,?,?,?,?)",
+                 (r["source"], datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                  r["found"], r["matched"], r["new"], r["error"], r.get("note")))
+    conn.commit()
+
+
+def source_status(conn):
+    rows = {r["source"]: dict(r) for r in conn.execute("SELECT * FROM runs")}
+    out = []
+    for s in load_sources():  # configured order; sources never fetched show as "never"
+        out.append(rows.get(s["name"]) or {"source": s["name"], "at": None, "found": 0,
+                                          "matched": 0, "new": 0, "error": None, "note": None})
+    return out
 
 
 def load_sources(path=None):
@@ -230,14 +303,16 @@ def ingest(conn, sources, today=None, auto_approve=False):
     today = today or date.today()
     report = []
     for src in sources:
-        r = {"source": src["name"], "found": 0, "new": 0, "error": None}
+        r = {"source": src["name"], "found": 0, "matched": 0, "new": 0, "error": None, "note": None}
         report.append(r)
         try:
             items = collect(src)
         except Exception as e:  # one broken source must not stop the others
-            r["error"] = f"{type(e).__name__}: {e}"
+            r["error"] = f"{type(e).__name__}: {e}"[:300]
+            record_run(conn, r)
             continue
         r["found"] = len(items)
+        keep_all = src.get("keep_all", False)
         for it in items:
             if not it["link"] or not it["title"]:
                 continue
@@ -252,27 +327,41 @@ def ingest(conn, sources, today=None, auto_approve=False):
                 continue
             text = f"{it['title']} {it['description']}"
             tags = classify(text)
-            if not tags and not src.get("keep_all"):
+            if not tags and not keep_all:
                 continue
+            r["matched"] += 1
             # Recurring calendar events share titles month to month, so they dedupe on URL only.
             q = "SELECT 1 FROM items WHERE url=?" + ("" if calendar else " OR title=?")
             if conn.execute(q, (it["link"],) if calendar else (it["link"], it["title"])).fetchone():
                 continue
+
+            body = ""
+            if src.get("fetch_body") and not calendar:  # official sources only: text for preview and rules
+                try:
+                    body = html_to_text(http_get(it["link"]))[:8000]
+                except Exception as e:
+                    r["note"] = r["note"] or f"article text not fetched: {type(e).__name__}"
+            deadline_by = None
             if calendar:
                 dl = {"date": event.isoformat(), "year_inferred": False,
                       "evidence": f"{src['name']}: {event:%d/%m/%Y}"}
+                deadline_by = "calendar"
             else:
-                dl = find_deadline(text, pub or today)
+                dl = find_deadline(f"{text} {body}", pub or today)
+                deadline_by = "rule" if dl else None
             conn.execute(
                 "INSERT INTO items(id,source,title,url,published,fetched_at,excerpt,tags,deadline,"
-                "deadline_evidence,year_inferred,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "deadline_evidence,year_inferred,status,body,summary,deadline_by) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (hashlib.sha1(it["link"].encode()).hexdigest()[:10], src["name"], it["title"], it["link"],
                  pub.isoformat() if pub else None, datetime.now(timezone.utc).isoformat(timespec="seconds"),
                  it["description"][:300] if src.get("store_excerpt", True) else "",
                  ", ".join(tags), dl["date"] if dl else None, dl["evidence"] if dl else None,
-                 int(dl["year_inferred"]) if dl else 0, "approved" if auto_approve else "pending"))
+                 int(dl["year_inferred"]) if dl else 0, "approved" if auto_approve else "pending",
+                 body or None, None, deadline_by if dl else None))
             r["new"] += 1
-    conn.commit()
+        conn.commit()
+        record_run(conn, r)
     return report
 
 
@@ -280,7 +369,8 @@ def ingest(conn, sources, today=None, auto_approve=False):
 
 
 def pending_rows(conn):
-    cols = "id,source,title,url,published,excerpt,tags,deadline,deadline_evidence,year_inferred"
+    cols = ("id,source,title,url,published,excerpt,tags,deadline,deadline_evidence,year_inferred,"
+            "summary,deadline_by,substr(body,1,4000) AS body")
     return [dict(r) for r in conn.execute(
         f"SELECT {cols} FROM items WHERE status='pending' ORDER BY COALESCE(published,'') DESC, fetched_at DESC")]
 
@@ -315,22 +405,40 @@ def days_left(row, today):
     return (date.fromisoformat(row["deadline"]) - today).days
 
 
+def event_sources():
+    """Names of sources whose entries are calendar events (a date to meet), not articles."""
+    try:
+        return {s["name"] for s in load_sources() if s.get("pubdate_is_deadline")}
+    except (OSError, ValueError, KeyError):
+        return set()
+
+
 def build(conn, today=None, days=2, only_new=False):
+    """Two separate lists.
+
+    deadlines: everything with an upcoming deadline date (calendar events AND articles whose text states one).
+    news:      articles only (calendar events excluded), limited to the last `days` days. An article that
+               states a deadline appears in both lists, so a reader of either section sees it.
+    """
     today = today or date.today()
+    iso_today = today.isoformat()
     cutoff = (today - timedelta(days=days)).isoformat()
+    events = event_sources()
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM items WHERE status='approved' AND "
         "(COALESCE(published, substr(fetched_at,1,10)) >= ? OR deadline >= ?)",
-        (cutoff, today.isoformat()))]
+        (cutoff, iso_today))]
     deadlines, news = [], []
     for r in rows:
-        if r["deadline"] and r["deadline"] >= today.isoformat():
+        r["kind"] = "event" if r["source"] in events else "article"
+        if r["deadline"] and r["deadline"] >= iso_today:
             if not only_new or r["sent_at"] is None or days_left(r, today) <= 7:
                 deadlines.append(r)
-        elif not only_new or r["sent_at"] is None:
-            news.append(r)
+        if r["kind"] == "article" and (r["published"] or r["fetched_at"][:10]) >= cutoff:
+            if not only_new or r["sent_at"] is None:
+                news.append(r)
     deadlines.sort(key=lambda r: r["deadline"])
-    news.sort(key=lambda r: r["published"] or "", reverse=True)
+    news.sort(key=lambda r: (r["published"] or r["fetched_at"][:10]), reverse=True)
     return deadlines, news
 
 
@@ -350,8 +458,10 @@ def render_text(deadlines, news, today=None):
             if r["year_inferred"]:
                 line += " (το έτος υποτέθηκε, ελέγξτε)"
             out.append(line)
+    shown = {r["id"] for r in deadlines}  # an article with a deadline is already listed above
+    news = [r for r in news if r["id"] not in shown]
     if news:
-        out.append("\n📰 ΝΕΑ")
+        out.append("\n📰 ΑΡΘΡΑ")
         for r in news:
             out.append(f"\n• {r['title']}\n   [{r['tags']}] {r['source']} · {r['url']}")
     if not deadlines and not news:
@@ -360,10 +470,17 @@ def render_text(deadlines, news, today=None):
     return "\n".join(out)
 
 
-def render_json(deadlines, news):
-    keep = ("id", "source", "title", "url", "published", "tags", "deadline", "deadline_evidence", "year_inferred")
-    return json.dumps({"deadlines": [{k: r[k] for k in keep} for r in deadlines],
-                       "news": [{k: r[k] for k in keep} for r in news]}, ensure_ascii=False, indent=2)
+def render_json(deadlines, news, sources=None, features=None):
+    # The article body is never published here; it stays in the database for the admin preview and rules.
+    keep = ("id", "source", "title", "url", "published", "tags", "deadline", "deadline_evidence", "year_inferred",
+            "kind", "summary", "deadline_by")
+    out = {"deadlines": [{k: r.get(k) for k in keep} for r in deadlines],
+           "news": [{k: r.get(k) for k in keep} for r in news]}
+    if sources is not None:
+        out["sources"] = sources
+    if features is not None:
+        out["features"] = features
+    return json.dumps(out, ensure_ascii=False, indent=2)
 
 
 # ------------------------------------------------------------------- delivery
@@ -399,7 +516,11 @@ class _Api(BaseHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
     def _is_admin(self):
-        return bool(self.admin_key) and _same(self.headers.get("X-Admin-Key"), self.admin_key)
+        ok = bool(self.admin_key) and _same(self.headers.get("X-Admin-Key"), self.admin_key)
+        if not ok and self.headers.get("X-Admin-Key"):
+            import time
+            time.sleep(0.5)  # slows down key guessing; each request has its own thread
+        return ok
 
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
@@ -428,25 +549,34 @@ class _Api(BaseHTTPRequestHandler):
                 days = 2
             conn = db()
             try:
-                body = render_json(*build(conn, days=days)).encode()
+                body = render_json(*build(conn, days=days), sources=source_status(conn)).encode()
             finally:
                 conn.close()
             return self._send(200, body, "application/json; charset=utf-8")
         self._send(404, b"not found", "text/plain")
 
+    def _read_json(self):
+        """Parsed JSON object from the request body, or None after sending an error response."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > self.MAX_BODY:
+                self._send(413, b"too large", "text/plain")
+                return None
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError
+            return payload
+        except ValueError:
+            self._json(400, {"error": "invalid JSON body"})
+            return None
+
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         if not self._is_admin():
             return self._send(401, b"unauthorized", "text/plain")
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length > self.MAX_BODY:
-                return self._send(413, b"too large", "text/plain")
-            payload = json.loads(self.rfile.read(length) or b"{}")
-            if not isinstance(payload, dict):
-                raise ValueError
-        except ValueError:
-            return self._json(400, {"error": "invalid JSON body"})
+        payload = self._read_json()
+        if payload is None:
+            return
         conn = db()
         try:
             if path == "/api/review":
@@ -483,6 +613,37 @@ class _Api(BaseHTTPRequestHandler):
 # ------------------------------------------------------------------------ CLI
 
 
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def check_public_config(host, admin_key):
+    """Return an error message if this host/key combination is unsafe, else None."""
+    if host in LOOPBACK:
+        return None
+    if not admin_key or len(admin_key) < 16:
+        return ("Refusing to listen on a public address without a strong admin key.\n"
+                "Set DIGEST_ADMIN_KEY to a random string of at least 16 characters, e.g.\n"
+                '  python3 -c "import secrets; print(secrets.token_urlsafe(24))"')
+    return None
+
+
+def fetch_loop(hours):
+    """Background thread: fetch all sources every `hours` hours into the review queue."""
+    import time
+    while True:
+        try:
+            conn = db()
+            try:
+                for r in ingest(conn, load_sources()):
+                    print(f"[fetch] {r['source']}: found {r['found']}, new {r['new']}"
+                          + (f"  ERROR {r['error']}" if r["error"] else ""), flush=True)
+            finally:
+                conn.close()
+        except Exception as e:  # never let the scheduler thread die
+            print(f"[fetch] failed: {type(e).__name__}: {e}", flush=True)
+        time.sleep(max(0.05, hours) * 3600)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -501,9 +662,11 @@ def main(argv=None):
     p.add_argument("--only-new", action="store_true")
     p = sub.add_parser("send-telegram", help="send the digest (needs TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)")
     p.add_argument("--days", type=int, default=2)
-    p = sub.add_parser("serve", help="read-only JSON API for a webapp")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8080)
+    p = sub.add_parser("serve", help="web interface + JSON API (HOST/PORT env vars are honored for hosting)")
+    p.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    p.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
+    p.add_argument("--fetch-every", type=float, default=float(os.environ.get("DIGEST_FETCH_HOURS", "0")),
+                   help="also fetch the sources every N hours in the background (0 = off)")
     a = ap.parse_args(argv)
 
     conn = db()
@@ -551,11 +714,17 @@ def main(argv=None):
         print(f"Sent {len(d)} deadlines and {len(n)} news items.")
     elif a.cmd == "serve":
         admin = os.environ.get("DIGEST_ADMIN_KEY")
-        if not admin:
+        problem = check_public_config(a.host, admin)
+        if problem:
+            sys.exit(problem)
+        if not admin:  # local use only: check_public_config already rejected this for public hosts
             admin = secrets.token_urlsafe(16)
             print(f"Admin key for the review page (generated for this run): {admin}")
             print("Set DIGEST_ADMIN_KEY to keep a fixed key.")
         _Api.admin_key = admin
+        if a.fetch_every > 0:
+            threading.Thread(target=fetch_loop, args=(a.fetch_every,), daemon=True).start()
+            print(f"Background fetch every {a.fetch_every:g} h (new items wait in the review queue).")
         print(f"Serving on http://{a.host}:{a.port}/  (review page: /review.html)")
         ThreadingHTTPServer((a.host, a.port), _Api).serve_forever()
 

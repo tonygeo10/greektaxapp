@@ -31,22 +31,37 @@
   </header>
 
   <main class="wrap">
-    <div class="filters">
+    <div class="tabs" role="tablist" aria-label="Ενότητες">
+      <button id="tab-deadlines" class="tab" role="tab" type="button" aria-selected="true" aria-controls="deadlines-sec">
+        ⏰ Προθεσμίες <span id="n-deadlines" class="count">0</span>
+      </button>
+      <button id="tab-news" class="tab" role="tab" type="button" aria-selected="false" aria-controls="news-sec">
+        📰 Άρθρα <span id="n-news" class="count">0</span>
+      </button>
+    </div>
+
+    <details id="sources-sec" class="sources" hidden>
+      <summary id="sources-summary">Πηγές</summary>
+      <ul id="sources" class="srclist"></ul>
+    </details>
+
+    <div id="filters" class="filters">
       <input id="q" type="search" placeholder="Αναζήτηση (τίτλος, πηγή, θέμα)…" aria-label="Αναζήτηση">
+      <div id="srcchips" class="chips" role="group" aria-label="Φίλτρο πηγής"></div>
       <div id="tags" class="chips" role="group" aria-label="Φίλτρο θέματος"></div>
     </div>
 
     <p id="status" role="status" class="status"></p>
 
-    <section id="deadlines-sec" aria-labelledby="h-deadlines">
-      <h2 id="h-deadlines">Προθεσμίες</h2>
+    <section id="deadlines-sec" role="tabpanel" aria-labelledby="tab-deadlines">
       <ol id="deadlines" class="list"></ol>
+      <button id="more-deadlines" type="button" class="ghost more" hidden></button>
     </section>
 
-    <section id="news-sec" aria-labelledby="h-news">
-      <h2 id="h-news">Νέα</h2>
+    <section id="news-sec" role="tabpanel" aria-labelledby="tab-news" hidden>
       <ul id="news" class="list"></ul>
     </section>
+
   </main>
 
   <footer class="wrap muted">

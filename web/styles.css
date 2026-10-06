@@ -138,6 +138,32 @@ button.small { padding: 3px 10px; font-size: .82rem; }
 .saved { color: var(--muted); font-size: .85rem; }
 [hidden] { display: none !important; }
 
+.tabs { display: flex; gap: 4px; margin-top: 20px; border-bottom: 1px solid var(--border); }
+button.tab {
+  background: transparent; color: var(--muted); border: 0; border-bottom: 3px solid transparent;
+  border-radius: 0; padding: 10px 14px; font-size: 1rem; font-weight: 600; margin-bottom: -1px;
+}
+button.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.count { background: var(--chip); color: var(--text); border-radius: 999px; padding: 0 8px; font-size: .8rem; margin-left: 4px; }
+#deadlines-sec, #news-sec { margin-top: 8px; }
+.deadline-tag { margin-top: 6px; font-size: .88rem; font-weight: 600; color: var(--soon); }
+
+.preview { margin-top: 8px; font-size: .92rem; }
+.preview summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.bodytext { margin-top: 6px; max-height: 260px; overflow: auto; white-space: pre-wrap; font-size: .85rem;
+            padding: 8px 10px; background: var(--chip); border-radius: 8px; }
+
+.sources { margin-top: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; }
+.sources summary { cursor: pointer; font-weight: 600; }
+.sources.has-error { border-color: var(--urgent); }
+.sources.has-error summary { color: var(--urgent); }
+.srclist { list-style: none; margin: 10px 0 2px; padding: 0; display: grid; gap: 6px; font-size: .88rem; }
+.src.bad { color: var(--urgent); }
+.src.never { color: var(--muted); }
+.src span { color: var(--muted); }
+.src.bad span { color: var(--urgent); }
+.more { margin-top: 12px; }
+
 footer { padding-top: 32px; padding-bottom: 40px; }
 
 dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); max-width: 360px; width: calc(100% - 32px); }
@@ -152,6 +178,8 @@ dialog input { width: 100%; margin: 12px 0; }
 }
 
 @media (max-width: 520px) {
+  button.tab { padding: 10px 8px; font-size: .9rem; white-space: nowrap; }
+  .count { margin-left: 2px; padding: 0 6px; }
   .deadline { grid-template-columns: 52px 1fr; gap: 10px; }
   .datebadge { height: 52px; }
   .datebadge .day { font-size: 1.2rem; }

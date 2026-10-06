@@ -77,6 +77,11 @@
     h.append(a);
     body.append(h, el("p", "meta", r.source + (r.published ? " · " + fmt(r.published) : "")));
     if (r.excerpt) body.append(el("p", "excerpt", r.excerpt));
+    if (r.body) {  // the stored article text, so you can check the deadline before approving
+      const d = el("details", "preview");
+      d.append(el("summary", null, "Κείμενο άρθρου (αποθηκευμένο)"), el("div", "bodytext", r.body));
+      body.append(d);
+    }
 
     // Deadline: editable, because extraction can be wrong.
     const row = el("div", "deadline-row");

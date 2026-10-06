@@ -1,0 +1,13 @@
+[Unit]
+Description=Accounting digest
+After=network-online.target
+
+[Service]
+User=digest
+WorkingDirectory=/opt/digest
+EnvironmentFile=/etc/digest.env
+ExecStart=/usr/bin/python3 digest.py serve
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
