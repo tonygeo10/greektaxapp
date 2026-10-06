@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="el">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Έλεγχος ειδήσεων</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap bar">
+      <div>
+        <h1>Έλεγχος ειδήσεων</h1>
+        <p id="subtitle" class="muted">Φόρτωση…</p>
+      </div>
+      <div class="actions">
+        <a class="btn ghost" href="/">Δελτίο</a>
+        <button id="reload" type="button" class="ghost">Ανανέωση</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="toolbar">
+      <label class="check"><input id="all" type="checkbox"> Επιλογή όλων</label>
+      <button id="approve-sel" type="button">Έγκριση επιλεγμένων</button>
+      <button id="reject-sel" type="button" class="danger">Απόρριψη επιλεγμένων</button>
+      <button id="approve-all" type="button" class="ghost">Έγκριση όλων</button>
+    </div>
+
+    <p id="status" role="status" class="status"></p>
+    <ul id="items" class="list"></ul>
+  </main>
+
+  <footer class="wrap muted">
+    Οι εγκεκριμένες ειδήσεις εμφανίζονται στο δελτίο και στην αποστολή. Ελέγξτε τις προθεσμίες με την πηγή πριν εγκρίνετε.
+  </footer>
+
+  <dialog id="keydlg">
+    <form method="dialog">
+      <h2>Κλειδί διαχειριστή</h2>
+      <p class="muted">Το εμφανίζει ο διακομιστής όταν ξεκινά (ή το DIGEST_ADMIN_KEY). Αποθηκεύεται μόνο για αυτή την καρτέλα.</p>
+      <input id="keyinput" type="password" autocomplete="off" aria-label="Κλειδί διαχειριστή">
+      <div class="dlg-actions">
+        <button value="cancel" class="ghost">Άκυρο</button>
+        <button value="ok">Σύνδεση</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="review.js"></script>
+</body>
+</html>

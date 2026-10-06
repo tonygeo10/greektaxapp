@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="el">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Λογιστικό Δελτίο</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap bar">
+      <div>
+        <h1>Λογιστικό Δελτίο</h1>
+        <p id="subtitle" class="muted">Φόρτωση…</p>
+      </div>
+      <div class="actions">
+        <label class="field">
+          <span>Περίοδος</span>
+          <select id="days">
+            <option value="1">1 ημέρα</option>
+            <option value="2" selected>2 ημέρες</option>
+            <option value="7">7 ημέρες</option>
+            <option value="14">14 ημέρες</option>
+          </select>
+        </label>
+        <button id="refresh" type="button">Ανανέωση</button>
+        <button id="copy" type="button" class="ghost">Αντιγραφή κειμένου</button>
+        <a class="btn ghost" href="review.html">Έλεγχος</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="filters">
+      <input id="q" type="search" placeholder="Αναζήτηση (τίτλος, πηγή, θέμα)…" aria-label="Αναζήτηση">
+      <div id="tags" class="chips" role="group" aria-label="Φίλτρο θέματος"></div>
+    </div>
+
+    <p id="status" role="status" class="status"></p>
+
+    <section id="deadlines-sec" aria-labelledby="h-deadlines">
+      <h2 id="h-deadlines">Προθεσμίες</h2>
+      <ol id="deadlines" class="list"></ol>
+    </section>
+
+    <section id="news-sec" aria-labelledby="h-news">
+      <h2 id="h-news">Νέα</h2>
+      <ul id="news" class="list"></ul>
+    </section>
+  </main>
+
+  <footer class="wrap muted">
+    Ενημερωτικό δελτίο. Επιβεβαιώστε πάντα στην επίσημη πηγή πριν ενεργήσετε.
+  </footer>
+
+  <dialog id="keydlg">
+    <form method="dialog">
+      <h2>Κλειδί πρόσβασης</h2>
+      <p class="muted">Ο διακομιστής απαιτεί κλειδί. Αποθηκεύεται μόνο για αυτή την καρτέλα.</p>
+      <input id="keyinput" type="password" autocomplete="off" aria-label="Κλειδί πρόσβασης">
+      <div class="dlg-actions">
+        <button value="cancel" class="ghost">Άκυρο</button>
+        <button value="ok">Σύνδεση</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
